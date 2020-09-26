@@ -111,6 +111,49 @@ func (t *Tar) Archive(sources []string, destination string) error {
 	return nil
 }
 
+// UnarchiveWriter unpacks the .tar file at the source reader to a destination.
+// Destination will be treated as a folder name.
+func (t *Tar) UnarchiveReader(source io.Reader, sourceName string, destination string) error {
+	if !fileExists(destination) && t.MkdirAll {
+		err := mkdir(destination, 0755)
+		if err != nil {
+			return fmt.Errorf("preparing destination: %v", err)
+		}
+	}
+
+	// if the files in the archive do not all share a common
+	// root, then make sure we extract to a single subfolder
+	// rather than potentially littering the destination...
+	if t.ImplicitTopLevelFolder {
+		var err error
+		destination, err = t.addTopLevelFolderReader(source, sourceName, destination)
+		if err != nil {
+			return fmt.Errorf("scanning source archive: %v", err)
+		}
+	}
+	err := t.Open(source, 0)
+	if err != nil {
+		return fmt.Errorf("opening tar archive for reading: %v", err)
+	}
+	defer t.Close()
+
+	for {
+		err := t.untarNext(destination)
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			if t.ContinueOnError {
+				log.Printf("[ERROR] Reading file in tar archive: %v", err)
+				continue
+			}
+			return fmt.Errorf("reading file in tar archive: %v", err)
+		}
+	}
+
+	return nil
+}
+
 // Unarchive unpacks the .tar file at source to destination.
 // Destination will be treated as a folder name.
 func (t *Tar) Unarchive(source, destination string) error {
@@ -161,20 +204,9 @@ func (t *Tar) Unarchive(source, destination string) error {
 	return nil
 }
 
-// addTopLevelFolder scans the files contained inside
-// the tarball named sourceArchive and returns a modified
-// destination if all the files do not share the same
-// top-level folder.
-func (t *Tar) addTopLevelFolder(sourceArchive, destination string) (string, error) {
-	file, err := os.Open(sourceArchive)
-	if err != nil {
-		return "", fmt.Errorf("opening source archive: %v", err)
-	}
-	defer file.Close()
-
-	// if the reader is to be wrapped, ensure we do that now
-	// or we will not be able to read the archive successfully
-	reader := io.Reader(file)
+func (t *Tar) addTopLevelFolderReader(archive io.Reader, sourceArchive string, destination string) (string, error) {
+	var err error
+	reader := archive
 	if t.readerWrapFn != nil {
 		reader, err = t.readerWrapFn(reader)
 		if err != nil {
@@ -204,6 +236,19 @@ func (t *Tar) addTopLevelFolder(sourceArchive, destination string) (string, erro
 	}
 
 	return destination, nil
+}
+
+// addTopLevelFolder scans the files contained inside
+// the tarball named sourceArchive and returns a modified
+// destination if all the files do not share the same
+// top-level folder.
+func (t *Tar) addTopLevelFolder(sourceArchive, destination string) (string, error) {
+	file, err := os.Open(sourceArchive)
+	if err != nil {
+		return "", fmt.Errorf("opening source archive: %v", err)
+	}
+	defer file.Close()
+	return t.addTopLevelFolderReader(file, sourceArchive, destination)
 }
 
 func (t *Tar) untarNext(destination string) error {
